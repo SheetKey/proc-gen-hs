@@ -26,9 +26,12 @@ library
 
                     , ProcGen.Turtle
 
+                    , MathUtil
+
     build-depends:    base ^>=4.18.2.0
                     , linear
                     , vector
+                    , lens
 
     hs-source-dirs:   src
     default-language: Haskell2010
