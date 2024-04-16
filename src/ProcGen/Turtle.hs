@@ -3,7 +3,7 @@
 module ProcGen.Turtle where
 
 -- linear
-import Linear
+import Linear hiding (angle, distance)
 
 data Turtle = Turtle
   { turtleDir :: V3 Double
