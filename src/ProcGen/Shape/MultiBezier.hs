@@ -14,7 +14,7 @@ import Linear
 -- vector
 import qualified Data.Vector as V
 
-class (Eq a, Floating a, Epsilon a) => MultiPoint p a | p -> a where
+class (Eq a, Floating a, Epsilon a, Bezier (PointDim p) a) => MultiPoint p a | p -> a where
   type PointDim p
   toBezier :: (a -> a -> (a -> a)) -> p -> p -> PointDim p
 
@@ -42,7 +42,7 @@ class (Eq a, Floating a, Epsilon a, MultiPoint p a, Bezier (PointDim p) a)
 
 newtype (Eq a, Floating a, Epsilon a, MultiPoint p a) => Curve p a = Curve (V.Vector p)
 
-instance (Eq a, Floating a, Epsilon a, MultiPoint (p a) a, Bezier (PointDim (p a)) a)
-         => MultiBezier (Curve (p a) a) (p a) a where
+instance {-# OVERLAPPABLE #-}
+  (Eq a, Floating a, Epsilon a, MultiPoint (p a) a) => MultiBezier (Curve (p a) a) (p a) a where
   toRawCurve mkTaper (Curve curve) = RawCurve $
     V.zipWith (toBezier mkTaper) (V.init curve) (V.tail curve)
