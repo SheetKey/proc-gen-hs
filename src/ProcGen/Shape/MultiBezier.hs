@@ -1,3 +1,4 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -7,6 +8,9 @@
 module ProcGen.Shape.MultiBezier where
 
 import ProcGen.Shape.Bezier
+
+-- base
+import GHC.Exts
 
 -- linear
 import Linear
@@ -41,6 +45,9 @@ class (Eq a, Floating a, Epsilon a, MultiPoint p a, Bezier (BezierType p) a)
   toRawCurve :: (a -> a -> (a -> a)) -> c -> RawCurve (BezierType p) a
 
 newtype MultiPoint p a => Curve p a = Curve (V.Vector p)
+  deriving (Eq, Ord, Show, Monoid, Semigroup, IsList)
+
+type CubicCurve a = Curve (CubicMP a) a
 
 instance {-# OVERLAPPABLE #-} MultiPoint (p a) a => MultiBezier (Curve (p a) a) (p a) a where
   toRawCurve mkTaper (Curve curve) =
