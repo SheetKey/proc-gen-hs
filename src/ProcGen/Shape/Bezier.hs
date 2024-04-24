@@ -12,7 +12,7 @@ import Linear
 -- composition-prelude
 import Control.Composition
 
-class (Eq a, Floating a, Epsilon a) => Bezier b a | b -> a where
+class (Ord a, Floating a, Epsilon a) => Bezier b a | b -> a where
   type Deriv b
   eval :: b -> a -> (V3 a, a)
   deriv :: b -> Deriv b
@@ -23,9 +23,18 @@ class (Eq a, Floating a, Epsilon a) => Bezier b a | b -> a where
   normal :: Bezier (Deriv b) a => b -> a -> V3 a
   normal bezier t =
     let tanVec@(V3 a b c) = tangent bezier t
-    in if a /= (negate b)
-       then normalize $ tanVec `cross` (V3 c c (negate $ a + b))
-       else normalize $ tanVec `cross` (V3 (negate $ b + c) a a)
+    in if a /= negate b
+       then normalize $ tanVec `cross` V3 c c (negate $ a + b)
+       else normalize $ tanVec `cross` V3 (negate $ b + c) a a
+  safeEval :: b -> a -> (V3 a, a)
+  safeEval b t = if t < 0 || t > 1 then error "'t' out of bounds."
+                 else eval b t
+  safeTangent :: Bezier (Deriv b) a => b -> a -> V3 a
+  safeTangent b t = if t < 0 || t > 1 then error "'t' out of bounds."
+                    else tangent b t
+  safeNormal :: Bezier (Deriv b) a => b -> a -> V3 a
+  safeNormal b t = if t < 0 || t > 1 then error "'t' out of bounds."
+                   else normal b t
 
 -- | A linear bezier is the derivative of a quadratic bezier.
 data LinBezier a = LinBezier
@@ -69,7 +78,7 @@ data CubicBezier a = CubicBezier
   , taperC :: a -> a
   }
 
-instance (Eq a, Floating a, Epsilon a) => Bezier (LinBezier a) a where
+instance (Ord a, Floating a, Epsilon a) => Bezier (LinBezier a) a where
   type Deriv (LinBezier a) = a
   eval LinBezier {..} tVal = case tVal of
     0 -> (V3 lx0 ly0 lz0, taperL 0)
@@ -81,7 +90,7 @@ instance (Eq a, Floating a, Epsilon a) => Bezier (LinBezier a) a where
          in (V3 x y z, taperL t)
   deriv _ = 0
   
-instance (Eq a, Floating a, Epsilon a) => Bezier (QuadBezier a) a where
+instance (Ord a, Floating a, Epsilon a) => Bezier (QuadBezier a) a where
   type Deriv (QuadBezier a) = LinBezier a
   eval QuadBezier {..} time =
     case time of
@@ -107,7 +116,7 @@ instance (Eq a, Floating a, Epsilon a) => Bezier (QuadBezier a) a where
         taperL = taperQ
     in LinBezier {..}
 
-instance (Eq a, Floating a, Epsilon a) => Bezier (CubicBezier a) a where
+instance (Ord a, Floating a, Epsilon a) => Bezier (CubicBezier a) a where
   type Deriv (CubicBezier a) = QuadBezier a
   eval CubicBezier {..} time =
     case time of
