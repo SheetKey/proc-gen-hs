@@ -32,6 +32,9 @@ library
     build-depends:    base ^>=4.18.2.0
                     , linear
                     , vector
+                    , MonadRandom
+                    , mtl
+                    , containers
                     , lens
                     , composition-prelude
 
