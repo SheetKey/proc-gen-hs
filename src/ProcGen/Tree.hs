@@ -1,14 +1,31 @@
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RecordWildCards #-}
 
 module ProcGen.Tree where
 
+import MathUtil
 import ProcGen.Shape.MultiBezier
+import ProcGen.Turtle
+
+-- base
+import Control.Arrow (first)
 
 -- linear
 import Linear
 
 -- vector
-import qualified Data.Vector as V 
+import qualified Data.Vector as V
+
+-- MonadRandom
+import Control.Monad.Random
+
+-- mtl
+import Control.Monad.Reader.Class
+import Control.Monad.State.Class
+
+-- containers
+import qualified Data.IntMap.Lazy as M
 
 data BranchMode = Fan | Whorled | AltOpp
 
@@ -133,3 +150,182 @@ stemFromDepth sDepth = Stem
   , ..
   }
 
+data TBState = TBState
+  { tree :: Tree
+  , stems :: M.IntMap Stem
+  , stemKeys :: ([Int], Int)
+  , turtles :: M.IntMap Turtle
+  , turtleKeys :: ([Int], Int)
+  }
+
+newtype TreeBuilder g a = TB
+  { runTB :: Parameters -> g -> TBState -> (a, TBState, g) }
+
+instance Functor (TreeBuilder g) where
+  fmap f tb = TB $ \ p g s ->
+    let ~(a, s', g') = runTB tb p g s
+    in (f a, s', g')
+  {-# INLINE fmap #-}
+
+instance Applicative (TreeBuilder g) where
+  pure a = TB $ \ _ g s -> (a, s, g)
+  {-# INLINE pure #-}
+  tbf <*> tba = TB $ \ p g s ->
+    let ~(f, s', g') = runTB tbf p g s
+        ~(v, s'', g'') = runTB tba p g' s'
+    in (f v, s'', g'')
+  {-# INLINE (<*>) #-}
+
+instance Monad (TreeBuilder g) where
+  tba >>= tbf = TB $ \ p g s ->
+    let ~(a, s', g') = runTB tba p g s
+        ~(b, s'', g'') = runTB (tbf a) p g' s'
+    in (b, s'', g'')
+  {-# INLINE (>>=) #-}
+
+instance RandomGen g => MonadRandom (TreeBuilder g) where
+  getRandomR lohi = TB $ \ _ g s -> let ~(a, g') = randomR lohi g in (a, s, g')
+  getRandom = TB $ \ _ g s -> let ~(a, g') = random g in (a, s, g')
+  getRandomRs lohi = TB $ \ _ g s ->
+                            let ~(as, g') = (first (randomRs lohi) . split) g
+                            in (as, s, g')
+  getRandoms = TB $ \ _ g s ->
+                      let ~(as, g') = (first randoms . split) g
+                      in (as, s, g')
+
+getRandomState :: TreeBuilder g g
+getRandomState = TB $ \ _ g s -> (g, s, g)
+
+setRandomState :: g -> TreeBuilder g ()
+setRandomState g = TB $ \ _ _ s -> ((), s, g)
+
+instance MonadReader Parameters (TreeBuilder g) where
+  ask = TB $ \ p g s -> (p, s, g)
+  {-# INLINE ask #-}
+  reader f = TB $ \ p g s -> (f p, s, g)
+  {-# INLINE reader #-}
+  local f tb = TB $ \ p g s -> runTB tb (f p) g s
+  {-# INLINE local #-}
+
+instance MonadState TBState (TreeBuilder g) where
+  get = TB $ \ _ g s -> (s, s, g)
+  {-# INLINE get #-}
+  put s = TB $ \ _ g _ -> ((), s, g)
+  {-# INLINE put #-}
+  state f = TB $ \ _ g s -> let ~(a, s') = f s in (a, s', g)
+  {-# INLINE state #-}
+
+putStem :: Stem -> TreeBuilder g ()
+putStem stem = modify $ \ TBState {..} ->
+  case stemKeys of
+    ([], key) -> TBState
+      { stems = M.insert key stem stems, stemKeys = ([], key + 1), .. }
+    (key:keys, nextKey) -> TBState
+      { stems = M.insert key stem stems, stemKeys = (keys, nextKey), .. }
+
+putTurtle :: Turtle -> TreeBuilder g ()
+putTurtle turtle = modify $ \ TBState {..} ->
+  case turtleKeys of
+    ([], key) -> TBState
+      { turtles = M.insert key turtle turtles, turtleKeys = ([], key + 1), .. }
+    (key:keys, nextKey) -> TBState
+      { turtles = M.insert key turtle turtles, turtleKeys = (keys, nextKey), .. }
+
+type StemKey = Int
+type TurtleKey = Int
+
+modifyStem :: StemKey -> (Stem -> Stem) -> TreeBuilder g ()
+modifyStem key f = modify $ \ TBState {..} -> TBState
+  { stems = M.adjust f key stems, .. }
+
+modifyTurtle :: TurtleKey -> (Turtle -> Turtle) -> TreeBuilder g ()
+modifyTurtle key f = modify $ \ TBState {..} -> TBState
+  { turtles = M.adjust f key turtles, .. }
+
+getStem :: StemKey -> TreeBuilder g Stem
+getStem key = (M.! key) . stems <$> get
+
+getTurtle :: TurtleKey -> TreeBuilder g Turtle
+getTurtle key = (M.! key) . turtles <$> get
+
+deleteStem :: StemKey -> TreeBuilder g ()
+deleteStem key = modify $ \ TBState {..} ->
+  case stemKeys of
+    (keys, nextKey) -> TBState
+      { stems = M.delete key stems, stemKeys = (key:keys, nextKey), .. }
+
+deleteTurtle :: TurtleKey -> TreeBuilder g ()
+deleteTurtle key = modify $ \ TBState {..} ->
+  case turtleKeys of
+    (keys, nextKey) -> TBState
+      { turtles = M.delete key turtles, turtleKeys = (key:keys, nextKey), .. }
+
+adjustStem :: StemKey -> Stem -> TreeBuilder g ()
+adjustStem key stem = modify $ \ TBState {..} -> TBState
+  { stems = M.insert key stem stems, .. }
+
+adjustTurtle :: TurtleKey -> Turtle -> TreeBuilder g ()
+adjustTurtle key turtle = modify $ \ TBState {..} -> TBState
+  { turtles = M.insert key turtle turtles, .. }
+
+stateStem :: StemKey -> (Stem -> (a, Stem)) -> TreeBuilder g a
+stateStem key f = do
+  stem <- getStem key
+  let (a, stem') = f stem
+  adjustStem key stem'
+  return a
+
+stateTurtle :: TurtleKey -> (Turtle -> (a, Turtle)) -> TreeBuilder g a
+stateTurtle key f = do
+  turtle <- getTurtle key
+  let (a, turtle') = f turtle
+  adjustTurtle key turtle'
+  return a
+
+useStem :: StemKey -> (Stem -> a) -> TreeBuilder g a
+useStem key f = do
+  stem <- getStem key
+  return $ f stem
+
+useTurtle :: TurtleKey -> (Turtle -> a) -> TreeBuilder g a
+useTurtle key f = do
+  turtle <- getTurtle key
+  return $ f turtle
+    
+calcHelixPoints :: RandomGen g => Turtle -> Double -> Double
+                -> TreeBuilder g (V3 Double, V3 Double, V3 Double, V3 Double)
+calcHelixPoints Turtle {..} rad pitch = do
+  spinAng <- getRandomR (0, 2 * pi)
+  let p0 = V3 0 (negate rad) (negate pitch / 4)
+      p1 = V3 (4 * rad/ 3) (negate rad) 0
+      p2 = V3 (4 * rad / 3) rad 0
+      p3 = V3 0 rad (pitch / 4) 
+      trf = toTrackQuatZY turtleDir
+      rotQuat = axisAngle (V3 0 0 1) spinAng
+      p0' = rotate trf $ rotate rotQuat p0
+      p1' = rotate trf $ rotate rotQuat p1
+      p2' = rotate trf $ rotate rotQuat p2
+      p3' = rotate trf $ rotate rotQuat p3
+  return (p1' - p0', p2' - p0', p3' - p0', turtleDir)
+
+calcShapeRatio :: PShape -> Double -> TreeBuilder g Double
+calcShapeRatio shape ratio =
+  case shape of
+    Spherical -> return $ 0.2 + 0.8 * sin (pi * ratio)
+    Hemispherical -> return $ 0.2 + 0.8 * sin (0.5 * pi * ratio)
+    Cylindrical -> return 1
+    TaperedCylindrical -> return $ 0.5 + 0.5 * ratio
+    Flame -> return $ if ratio <= 0.7 then ratio / 0.7 else (1 - ratio) / 0.3
+    InverseConical -> return $ 1 - 0.8 * ratio
+    TendFlame -> return $ if ratio <= 0.7
+                          then 0.5 + 0.5 * ratio / 0.7
+                          else 0.5 + 0.5 * (1 - ratio) / 0.3
+    Envelope -> if ratio < 0 || ratio > 1
+         then return 0
+         else do Parameters {..} <- ask
+                 if ratio < 1 - pPruneWidthPeak
+                   then return $ (ratio / (1 - pPruneWidthPeak)) ** pPrunePowerHigh
+                   else return $ ((1 - ratio) / (1 - pPruneWidthPeak)) ** pPrunePowerLow
+    Conical -> return $ 0.2 + 0.8 * ratio
+
+-- calcDownAngle :: RandomGen g => 
