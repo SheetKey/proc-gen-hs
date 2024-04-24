@@ -34,6 +34,6 @@ toTrackQuatZY v@(V3 x y z) =
       fp = mat L.^._z
       angle = -0.5 * atan2 (negate fp L.^._x) (negate fp L.^._y)
       co' = cos angle
-      si' = (sin angle) / len
+      si' = sin angle / len
       q2 = Quaternion co' (v ^* si')
   in mulQtQt q q2
