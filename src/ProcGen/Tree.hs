@@ -1,3 +1,4 @@
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -242,11 +243,18 @@ modifyTurtle :: TurtleKey -> (Turtle -> Turtle) -> TreeBuilder g ()
 modifyTurtle key f = modify $ \ TBState {..} -> TBState
   { turtles = M.adjust f key turtles, .. }
 
+modifyTree :: (Tree -> Tree) -> TreeBuilder g ()
+modifyTree f = modify $ \ TBState {..} -> TBState
+  { tree = f tree, .. }
+
 getStem :: StemKey -> TreeBuilder g Stem
 getStem key = (M.! key) . stems <$> get
 
 getTurtle :: TurtleKey -> TreeBuilder g Turtle
 getTurtle key = (M.! key) . turtles <$> get
+
+getTree :: TreeBuilder g Tree
+getTree = tree <$> get
 
 deleteStem :: StemKey -> TreeBuilder g ()
 deleteStem key = modify $ \ TBState {..} ->
@@ -268,6 +276,9 @@ adjustTurtle :: TurtleKey -> Turtle -> TreeBuilder g ()
 adjustTurtle key turtle = modify $ \ TBState {..} -> TBState
   { turtles = M.insert key turtle turtles, .. }
 
+adjustTree :: Tree -> TreeBuilder g ()
+adjustTree tree = modify $ \ TBState {..} -> TBState {..}
+
 stateStem :: StemKey -> (Stem -> (a, Stem)) -> TreeBuilder g a
 stateStem key f = do
   stem <- getStem key
@@ -282,6 +293,13 @@ stateTurtle key f = do
   adjustTurtle key turtle'
   return a
 
+stateTree :: (Tree -> (a, Tree)) -> TreeBuilder g a
+stateTree f = do
+  tree <- getTree
+  let (a, tree') = f tree
+  adjustTree tree'
+  return a
+
 useStem :: StemKey -> (Stem -> a) -> TreeBuilder g a
 useStem key f = do
   stem <- getStem key
@@ -291,10 +309,32 @@ useTurtle :: TurtleKey -> (Turtle -> a) -> TreeBuilder g a
 useTurtle key f = do
   turtle <- getTurtle key
   return $ f turtle
+
+useTree :: (Tree -> a) -> TreeBuilder g a
+useTree f = f <$> getTree
+
+useStemM :: StemKey -> (Stem -> TreeBuilder g a) -> TreeBuilder g a
+useStemM key f = do
+  stem <- getStem key
+  f stem
+
+useTurtleM :: TurtleKey -> (Turtle -> TreeBuilder g a) -> TreeBuilder g a
+useTurtleM key f = do
+  turtle <- getTurtle key
+  f turtle
+
+useTreeM :: (Tree -> TreeBuilder g a) -> TreeBuilder g a
+useTreeM f = getTree >>= f
+
+useParent :: StemKey -> (Stem -> a) -> TreeBuilder g a
+useParent key f = useStemM key $ \ Stem { sParent } -> useStem sParent f
+
+useParentM :: StemKey -> (Stem -> TreeBuilder g a) -> TreeBuilder g a
+useParentM key f = useStemM key $ \ Stem { sParent } -> useStemM sParent f
     
-calcHelixPoints :: RandomGen g => Turtle -> Double -> Double
+calcHelixPoints :: RandomGen g => TurtleKey -> Double -> Double
                 -> TreeBuilder g (V3 Double, V3 Double, V3 Double, V3 Double)
-calcHelixPoints Turtle {..} rad pitch = do
+calcHelixPoints key rad pitch = useTurtleM key $ \Turtle {..} -> do
   spinAng <- getRandomR (0, 2 * pi)
   let p0 = V3 0 (negate rad) (negate pitch / 4)
       p1 = V3 (4 * rad/ 3) (negate rad) 0
@@ -328,4 +368,25 @@ calcShapeRatio shape ratio =
                    else return $ ((1 - ratio) / (1 - pPruneWidthPeak)) ** pPrunePowerLow
     Conical -> return $ 0.2 + 0.8 * ratio
 
--- calcDownAngle :: RandomGen g => 
+calcStemLength :: RandomGen g => StemKey -> TreeBuilder g Double
+calcStemLength key = useStemM key $ \ Stem {..} -> do
+  Parameters {..} <- ask
+  result <- case sDepth of
+              -- trunk
+              0 -> do 
+                r <- getRandomR (-1, 1)
+                stateTree $ \ Tree {..} ->
+                  let tTrunkLength' = tTreeScale * ((pLength V.! 0) + r * (pLengthV V.! 0))
+                  in (tTrunkLength', Tree { tTrunkLength = tTrunkLength', .. })
+              -- first level
+              1 -> useParentM key $
+                \ Stem { sLength = psLength, sLengthChildMax = psLengthChildMax } ->
+                  useTreeM $
+                  \ Tree {..} -> do
+                    let ratio = (psLength - sOffset) / (psLength - tBaseLength)
+                    shapeRatio <- calcShapeRatio pShape ratio
+                    return $ psLength * psLengthChildMax * shapeRatio
+              _ -> useParent key $
+                \ Stem { sLength = psLength, sLengthChildMax = psLengthChildMax } ->
+                  psLengthChildMax * (psLength - 0.7 * sOffset)
+  return $ max 0 result
