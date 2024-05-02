@@ -11,6 +11,7 @@ import ProcGen.Turtle
 
 -- base
 import Control.Arrow (first)
+import Data.Fixed (mod')
 
 -- linear
 import Linear
@@ -504,3 +505,13 @@ calcDownAngle stemOffset = useStemM $ \ Stem {..} -> do
             let downAngle = downAngleV + (downAngleV * (1 - 2 * shapeRatio))
             r <- getRandomR (-1, 1)
             return $ downAngle + (r * abs (downAngle * 0.1))
+
+calcRotateAngle :: RandomGen g => Int -> Double -> TreeBuilder g Double
+calcRotateAngle depth prevAngle = do
+  Parameters {..} <- ask
+  let rot = pRotate V.! depth
+      rotV = pRotateV V.! depth
+  r <- getRandomR (-1, 1)
+  if rot >= 0
+    then return $ mod' (prevAngle + rot + (r * rotV)) (2 * pi)
+    else return $ prevAngle * (pi + rot + (r * rotV))
