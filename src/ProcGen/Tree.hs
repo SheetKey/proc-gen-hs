@@ -1,3 +1,4 @@
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -547,3 +548,43 @@ calcLeafCount = do
            let leaves = fromIntegral pLeafBlosNum * tTreeScale / pGScale
            in leaves * (sLength / (psLengthChildMax * psLength))
     else return $ fromIntegral pLeafBlosNum
+
+calcBranchCount :: RandomGen g => TreeBuilder g Double
+calcBranchCount = useStemM $ \ Stem {..} -> do
+  Parameters {..} <- ask
+  let dp1 = min (sDepth + 1) pMaxLevel
+      branches = fromIntegral $ pBranches V.! dp1
+  result <- if | sDepth == 0 -> do
+                   r <- getRandomR (0, 1)
+                   return $ branches * (r * 0.2 + 0.9)
+               | branches < 0 -> return branches
+               | sDepth == 1 -> useParent $
+                 \ Stem { sLength = psLength, sLengthChildMax = psLengthChildMax } ->
+                   branches * (0.2 + 0.8 * (sLength / psLength) / psLengthChildMax)
+               | otherwise -> useParent $
+                 \ Stem { sLength = psLength } ->
+                   branches * (1 - 0.5 * sOffset / psLength)
+  return $ result / (1 - pBaseSize V.! sDepth)
+
+calcRadiusAtOffset :: Double -> TreeBuilder g Double
+calcRadiusAtOffset z1 = useStemM $ \ Stem {..} -> do
+  Parameters {..} <- ask
+  let nTaper = pTaper V.! sDepth
+      unitTaper | nTaper < 1 = nTaper
+                | nTaper < 2 = 2 - nTaper
+                | otherwise = 0
+      taper = sRadius * (1 - unitTaper * z1)
+      z2 = (1 - z1) * sLength
+      depth = if nTaper < 2 || z2 < taper then 1 else nTaper - 2
+      z3 = if nTaper < 2 then z2 else abs $ z2 - 2 * taper
+                                      * ((fromIntegral :: Int -> Double) . truncate)
+                                      (z2 / (2 * taper) + 0.5)
+      radius | nTaper < 1 = taper
+             | nTaper < 2 && z3 >= taper = taper
+             | otherwise = (1 - depth) * taper + depth * sqrt
+                           ((taper ^ (2 :: Int)) - ((z3 - taper) ^ (2 :: Int)))
+  if sDepth == 0
+    then let yVal = max 0 (1 - 8 * z1)
+             flare = pFlare * (100 ** yVal) / 100 + 1
+         in return $ radius * flare
+    else return radius
