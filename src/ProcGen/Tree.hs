@@ -160,137 +160,185 @@ data TBState = TBState
   }
 
 newtype TreeBuilder g a = TB
-  { runTB :: Parameters -> g -> TBState -> (a, TBState, g) }
+  { runTB :: StemKey -> TurtleKey -> Parameters -> g -> TBState -> (a, TBState, g) }
 
 instance Functor (TreeBuilder g) where
-  fmap f tb = TB $ \ p g s ->
-    let ~(a, s', g') = runTB tb p g s
+  fmap f tb = TB $ \ sk tk p g s ->
+    let ~(a, s', g') = runTB tb sk tk p g s
     in (f a, s', g')
   {-# INLINE fmap #-}
 
 instance Applicative (TreeBuilder g) where
-  pure a = TB $ \ _ g s -> (a, s, g)
+  pure a = TB $ \ _ _ _ g s -> (a, s, g)
   {-# INLINE pure #-}
-  tbf <*> tba = TB $ \ p g s ->
-    let ~(f, s', g') = runTB tbf p g s
-        ~(v, s'', g'') = runTB tba p g' s'
+  tbf <*> tba = TB $ \ sk tk p g s ->
+    let ~(f, s', g') = runTB tbf sk tk p g s
+        ~(v, s'', g'') = runTB tba sk tk p g' s'
     in (f v, s'', g'')
   {-# INLINE (<*>) #-}
 
 instance Monad (TreeBuilder g) where
-  tba >>= tbf = TB $ \ p g s ->
-    let ~(a, s', g') = runTB tba p g s
-        ~(b, s'', g'') = runTB (tbf a) p g' s'
+  tba >>= tbf = TB $ \ sk tk p g s ->
+    let ~(a, s', g') = runTB tba sk tk p g s
+        ~(b, s'', g'') = runTB (tbf a) sk tk p g' s'
     in (b, s'', g'')
   {-# INLINE (>>=) #-}
 
 instance RandomGen g => MonadRandom (TreeBuilder g) where
-  getRandomR lohi = TB $ \ _ g s -> let ~(a, g') = randomR lohi g in (a, s, g')
-  getRandom = TB $ \ _ g s -> let ~(a, g') = random g in (a, s, g')
-  getRandomRs lohi = TB $ \ _ g s ->
+  getRandomR lohi = TB $ \ _ _ _ g s -> let ~(a, g') = randomR lohi g in (a, s, g')
+  getRandom = TB $ \ _ _ _ g s -> let ~(a, g') = random g in (a, s, g')
+  getRandomRs lohi = TB $ \ _ _ _ g s ->
                             let ~(as, g') = (first (randomRs lohi) . split) g
                             in (as, s, g')
-  getRandoms = TB $ \ _ g s ->
+  getRandoms = TB $ \ _ _ _ g s ->
                       let ~(as, g') = (first randoms . split) g
                       in (as, s, g')
 
 getRandomState :: TreeBuilder g g
-getRandomState = TB $ \ _ g s -> (g, s, g)
+getRandomState = TB $ \ _ _ _ g s -> (g, s, g)
 
 setRandomState :: g -> TreeBuilder g ()
-setRandomState g = TB $ \ _ _ s -> ((), s, g)
+setRandomState g = TB $ \ _ _ _ _ s -> ((), s, g)
 
 instance MonadReader Parameters (TreeBuilder g) where
-  ask = TB $ \ p g s -> (p, s, g)
+  ask = TB $ \ _ _ p g s -> (p, s, g)
   {-# INLINE ask #-}
-  reader f = TB $ \ p g s -> (f p, s, g)
+  reader f = TB $ \ _ _ p g s -> (f p, s, g)
   {-# INLINE reader #-}
-  local f tb = TB $ \ p g s -> runTB tb (f p) g s
+  local f tb = TB $ \ sk tk p g s -> runTB tb sk tk (f p) g s
   {-# INLINE local #-}
 
 instance MonadState TBState (TreeBuilder g) where
-  get = TB $ \ _ g s -> (s, s, g)
+  get = TB $ \ _ _ _ g s -> (s, s, g)
   {-# INLINE get #-}
-  put s = TB $ \ _ g _ -> ((), s, g)
+  put s = TB $ \ _ _ _ g _ -> ((), s, g)
   {-# INLINE put #-}
-  state f = TB $ \ _ g s -> let ~(a, s') = f s in (a, s', g)
+  state f = TB $ \ _ _ _ g s -> let ~(a, s') = f s in (a, s', g)
   {-# INLINE state #-}
 
-putStem :: Stem -> TreeBuilder g ()
-putStem stem = modify $ \ TBState {..} ->
+putStem :: Stem -> TreeBuilder g StemKey
+putStem stem = state $ \ TBState {..} ->
   case stemKeys of
-    ([], key) -> TBState
-      { stems = M.insert key stem stems, stemKeys = ([], key + 1), .. }
-    (key:keys, nextKey) -> TBState
-      { stems = M.insert key stem stems, stemKeys = (keys, nextKey), .. }
+    ([], key) ->
+      ( key
+      , TBState
+        { stems = M.insert key stem stems, stemKeys = ([], key + 1), .. }
+      )
+    (key:keys, nextKey) ->
+      ( key
+      , TBState
+        { stems = M.insert key stem stems, stemKeys = (keys, nextKey), .. }
+      )
 
-putTurtle :: Turtle -> TreeBuilder g ()
-putTurtle turtle = modify $ \ TBState {..} ->
+putTurtle :: Turtle -> TreeBuilder g TurtleKey
+putTurtle turtle = state $ \ TBState {..} ->
   case turtleKeys of
-    ([], key) -> TBState
-      { turtles = M.insert key turtle turtles, turtleKeys = ([], key + 1), .. }
-    (key:keys, nextKey) -> TBState
-      { turtles = M.insert key turtle turtles, turtleKeys = (keys, nextKey), .. }
-
+    ([], key) ->
+      ( key
+      , TBState
+        { turtles = M.insert key turtle turtles, turtleKeys = ([], key + 1), .. }
+      )
+    (key:keys, nextKey) ->
+      ( key
+      , TBState
+        { turtles = M.insert key turtle turtles, turtleKeys = (keys, nextKey), .. }
+      )
+      
 type StemKey = Int
 type TurtleKey = Int
 
-modifyStem :: StemKey -> (Stem -> Stem) -> TreeBuilder g ()
-modifyStem key f = modify $ \ TBState {..} -> TBState
+modifyStemKey :: StemKey -> (Stem -> Stem) -> TreeBuilder g ()
+modifyStemKey key f = modify $ \ TBState {..} -> TBState
   { stems = M.adjust f key stems, .. }
 
-modifyTurtle :: TurtleKey -> (Turtle -> Turtle) -> TreeBuilder g ()
-modifyTurtle key f = modify $ \ TBState {..} -> TBState
+modifyTurtleKey :: TurtleKey -> (Turtle -> Turtle) -> TreeBuilder g ()
+modifyTurtleKey key f = modify $ \ TBState {..} -> TBState
   { turtles = M.adjust f key turtles, .. }
+
+modifyStem :: (Stem -> Stem) -> TreeBuilder g ()
+modifyStem f = TB $ \ sk _ _ g TBState {..} ->
+  ((), TBState { stems = M.adjust f sk stems, ..}, g)
+
+modifyTurtle :: (Turtle -> Turtle) -> TreeBuilder g ()
+modifyTurtle f = TB $ \ _ tk _ g TBState {..} ->
+  ((), TBState { turtles = M.adjust f tk turtles, .. }, g)
 
 modifyTree :: (Tree -> Tree) -> TreeBuilder g ()
 modifyTree f = modify $ \ TBState {..} -> TBState
   { tree = f tree, .. }
 
-getStem :: StemKey -> TreeBuilder g Stem
-getStem key = (M.! key) . stems <$> get
+getStemKey :: StemKey -> TreeBuilder g Stem
+getStemKey key = (M.! key) . stems <$> get
 
-getTurtle :: TurtleKey -> TreeBuilder g Turtle
-getTurtle key = (M.! key) . turtles <$> get
+getTurtleKey :: TurtleKey -> TreeBuilder g Turtle
+getTurtleKey key = (M.! key) . turtles <$> get
+
+getStem :: TreeBuilder g Stem
+getStem = TB $ \ sk _ _ g s@(TBState {..}) -> (stems M.! sk, s, g)
+
+getTurtle :: TreeBuilder g Turtle
+getTurtle = TB $ \ _ tk _ g s@(TBState {..}) -> (turtles M.! tk, s, g)
 
 getTree :: TreeBuilder g Tree
 getTree = tree <$> get
 
-deleteStem :: StemKey -> TreeBuilder g ()
-deleteStem key = modify $ \ TBState {..} ->
+deleteStemKey :: StemKey -> TreeBuilder g ()
+deleteStemKey key = modify $ \ TBState {..} ->
   case stemKeys of
     (keys, nextKey) -> TBState
       { stems = M.delete key stems, stemKeys = (key:keys, nextKey), .. }
 
-deleteTurtle :: TurtleKey -> TreeBuilder g ()
-deleteTurtle key = modify $ \ TBState {..} ->
+deleteTurtleKey :: TurtleKey -> TreeBuilder g ()
+deleteTurtleKey key = modify $ \ TBState {..} ->
   case turtleKeys of
     (keys, nextKey) -> TBState
       { turtles = M.delete key turtles, turtleKeys = (key:keys, nextKey), .. }
 
-adjustStem :: StemKey -> Stem -> TreeBuilder g ()
-adjustStem key stem = modify $ \ TBState {..} -> TBState
+adjustStemKey :: StemKey -> Stem -> TreeBuilder g ()
+adjustStemKey key stem = modify $ \ TBState {..} -> TBState
   { stems = M.insert key stem stems, .. }
 
-adjustTurtle :: TurtleKey -> Turtle -> TreeBuilder g ()
-adjustTurtle key turtle = modify $ \ TBState {..} -> TBState
+adjustTurtleKey :: TurtleKey -> Turtle -> TreeBuilder g ()
+adjustTurtleKey key turtle = modify $ \ TBState {..} -> TBState
   { turtles = M.insert key turtle turtles, .. }
 
-adjustTree :: Tree -> TreeBuilder g ()
-adjustTree tree = modify $ \ TBState {..} -> TBState {..}
+adjustStem :: Stem -> TreeBuilder g ()
+adjustStem stem = TB $ \ sk _ _ g TBState {..} ->
+  ((), TBState { stems = M.insert sk stem stems, .. }, g)
 
-stateStem :: StemKey -> (Stem -> (a, Stem)) -> TreeBuilder g a
-stateStem key f = do
-  stem <- getStem key
+adjustTurtle :: Turtle -> TreeBuilder g ()
+adjustTurtle turtle = TB $ \ _ tk _ g TBState {..} ->
+  ((), TBState { turtles = M.insert tk turtle turtles, .. }, g)
+
+adjustTree :: Tree -> TreeBuilder g ()
+adjustTree tree' = modify $ \ TBState {..} -> TBState { tree = tree', ..}
+
+stateStemKey :: StemKey -> (Stem -> (a, Stem)) -> TreeBuilder g a
+stateStemKey key f = do
+  stem <- getStemKey key
   let (a, stem') = f stem
-  adjustStem key stem'
+  adjustStemKey key stem'
   return a
 
-stateTurtle :: TurtleKey -> (Turtle -> (a, Turtle)) -> TreeBuilder g a
-stateTurtle key f = do
-  turtle <- getTurtle key
+stateTurtleKey :: TurtleKey -> (Turtle -> (a, Turtle)) -> TreeBuilder g a
+stateTurtleKey key f = do
+  turtle <- getTurtleKey key
   let (a, turtle') = f turtle
-  adjustTurtle key turtle'
+  adjustTurtleKey key turtle'
+  return a
+
+stateStem :: (Stem -> (a, Stem)) -> TreeBuilder g a
+stateStem f = do
+  stem <- getStem
+  let (a, stem') = f stem
+  adjustStem stem'
+  return a
+
+stateTurtle :: (Turtle -> (a, Turtle)) -> TreeBuilder g a
+stateTurtle f = do
+  turtle <- getTurtle
+  let (a, turtle') = f turtle
+  adjustTurtle turtle'
   return a
 
 stateTree :: (Tree -> (a, Tree)) -> TreeBuilder g a
@@ -300,41 +348,71 @@ stateTree f = do
   adjustTree tree'
   return a
 
-useStem :: StemKey -> (Stem -> a) -> TreeBuilder g a
-useStem key f = do
-  stem <- getStem key
+useStemKey :: StemKey -> (Stem -> a) -> TreeBuilder g a
+useStemKey key f = do
+  stem <- getStemKey key
   return $ f stem
 
-useTurtle :: TurtleKey -> (Turtle -> a) -> TreeBuilder g a
-useTurtle key f = do
-  turtle <- getTurtle key
+useTurtleKey :: TurtleKey -> (Turtle -> a) -> TreeBuilder g a
+useTurtleKey key f = do
+  turtle <- getTurtleKey key
   return $ f turtle
+
+useStem :: (Stem -> a) -> TreeBuilder g a
+useStem = (<$> getStem)
+
+useTurtle :: (Turtle -> a) -> TreeBuilder g a
+useTurtle = (<$> getTurtle)
 
 useTree :: (Tree -> a) -> TreeBuilder g a
 useTree f = f <$> getTree
 
-useStemM :: StemKey -> (Stem -> TreeBuilder g a) -> TreeBuilder g a
-useStemM key f = do
-  stem <- getStem key
+useStemKeyM :: StemKey -> (Stem -> TreeBuilder g a) -> TreeBuilder g a
+useStemKeyM key f = do
+  stem <- getStemKey key
   f stem
 
-useTurtleM :: TurtleKey -> (Turtle -> TreeBuilder g a) -> TreeBuilder g a
-useTurtleM key f = do
-  turtle <- getTurtle key
+useTurtleKeyM :: TurtleKey -> (Turtle -> TreeBuilder g a) -> TreeBuilder g a
+useTurtleKeyM key f = do
+  turtle <- getTurtleKey key
   f turtle
+
+useStemM :: (Stem -> TreeBuilder g a) -> TreeBuilder g a
+useStemM f = getStem >>= f
+
+useTurtleM :: (Turtle -> TreeBuilder g a) -> TreeBuilder g a
+useTurtleM f = getTurtle >>= f
 
 useTreeM :: (Tree -> TreeBuilder g a) -> TreeBuilder g a
 useTreeM f = getTree >>= f
 
-useParent :: StemKey -> (Stem -> a) -> TreeBuilder g a
-useParent key f = useStemM key $ \ Stem { sParent } -> useStem sParent f
+useParentKey :: StemKey -> (Stem -> a) -> TreeBuilder g a
+useParentKey key f = useStemKeyM key $ \ Stem { sParent } ->
+  case sParent of
+    Nothing -> error "stem has no parent"
+    Just pkey -> useStemKey pkey f
 
-useParentM :: StemKey -> (Stem -> TreeBuilder g a) -> TreeBuilder g a
-useParentM key f = useStemM key $ \ Stem { sParent } -> useStemM sParent f
+useParent :: (Stem -> a) -> TreeBuilder g a
+useParent f = useStemM $ \ Stem { sParent } ->
+  case sParent of
+    Nothing -> error "stem has no parent"
+    Just pkey -> useStemKey pkey f
+
+useParentKeyM :: StemKey -> (Stem -> TreeBuilder g a) -> TreeBuilder g a
+useParentKeyM key f = useStemKeyM key $ \ Stem { sParent } ->
+  case sParent of
+    Nothing -> error "stem has no parent"
+    Just pkey -> useStemKeyM pkey f
+
+useParentM :: (Stem -> TreeBuilder g a) -> TreeBuilder g a
+useParentM f = useStemM $ \ Stem { sParent } ->
+  case sParent of
+    Nothing -> error "stem has no parent"
+    Just pkey -> useStemKeyM pkey f
     
-calcHelixPoints :: RandomGen g => TurtleKey -> Double -> Double
+calcHelixPoints :: RandomGen g => Double -> Double
                 -> TreeBuilder g (V3 Double, V3 Double, V3 Double, V3 Double)
-calcHelixPoints key rad pitch = useTurtleM key $ \Turtle {..} -> do
+calcHelixPoints rad pitch = useTurtleM $ \Turtle {..} -> do
   spinAng <- getRandomR (0, 2 * pi)
   let p0 = V3 0 (negate rad) (negate pitch / 4)
       p1 = V3 (4 * rad/ 3) (negate rad) 0
@@ -368,8 +446,8 @@ calcShapeRatio shape ratio =
                    else return $ ((1 - ratio) / (1 - pPruneWidthPeak)) ** pPrunePowerLow
     Conical -> return $ 0.2 + 0.8 * ratio
 
-calcStemLength :: RandomGen g => StemKey -> TreeBuilder g Double
-calcStemLength key = useStemM key $ \ Stem {..} -> do
+calcStemLength :: RandomGen g => TreeBuilder g Double
+calcStemLength = useStemM $ \ Stem {..} -> do
   Parameters {..} <- ask
   result <- case sDepth of
               -- trunk
@@ -379,14 +457,50 @@ calcStemLength key = useStemM key $ \ Stem {..} -> do
                   let tTrunkLength' = tTreeScale * ((pLength V.! 0) + r * (pLengthV V.! 0))
                   in (tTrunkLength', Tree { tTrunkLength = tTrunkLength', .. })
               -- first level
-              1 -> useParentM key $
+              1 -> useParentM $
                 \ Stem { sLength = psLength, sLengthChildMax = psLengthChildMax } ->
                   useTreeM $
                   \ Tree {..} -> do
                     let ratio = (psLength - sOffset) / (psLength - tBaseLength)
                     shapeRatio <- calcShapeRatio pShape ratio
                     return $ psLength * psLengthChildMax * shapeRatio
-              _ -> useParent key $
+              _ -> useParent $
                 \ Stem { sLength = psLength, sLengthChildMax = psLengthChildMax } ->
                   psLengthChildMax * (psLength - 0.7 * sOffset)
   return $ max 0 result
+
+calcStemRadius :: TreeBuilder g Double
+calcStemRadius = useStemM $ \ Stem {..} -> do
+  Parameters {..} <- ask
+  if sDepth == 0
+    then return $ sLength * (pRatio * (pRadiusMod V.! 0))
+    else useParent $ \ Stem { sRadius = psRadius, sLength = psLength } ->
+                       min sRadiusLimit $ max 0.005 $
+                       (pRadiusMod V.! sDepth) * psRadius * ((sLength / psLength) ** pRatioPower)
+
+calcCurveAngle :: RandomGen g => Int -> Int -> TreeBuilder g Double
+calcCurveAngle depth segInd = do
+  Parameters {..} <- ask
+  let curve = pCurve V.! depth
+      curveBack = pCurveBack V.! depth
+      curveRes = fromIntegral $ pCurveRes V.! depth
+      curveV = pCurveV V.! depth
+      curveAngle | curveBack == 0 = curve / curveRes
+                 | fromIntegral segInd < curveRes / 2 = curve / (curveRes / 2)
+                 | otherwise = curveBack / (curveRes / 2)
+  r <- getRandomR (-1, 1)
+  return $ curveAngle + (r * (curveV / curveRes))
+
+calcDownAngle :: RandomGen g => Double -> TreeBuilder g Double
+calcDownAngle stemOffset = useStemM $ \ Stem {..} -> do
+  Parameters {..} <- ask
+  let dp1 = min (sDepth + 1) pMaxLevel
+      downAngleV = pDownAngleV V.! dp1
+  if downAngleV >= 0
+    then do r <- getRandomR (-1, 1)
+            return $ (pDownAngle V.! dp1) + (r * downAngleV)
+    else do shapeRatio <- calcShapeRatio Spherical $
+                          (sLength - stemOffset) / (sLength * (1 - pBaseSize V.! sDepth))
+            let downAngle = downAngleV + (downAngleV * (1 - 2 * shapeRatio))
+            r <- getRandomR (-1, 1)
+            return $ downAngle + (r * abs (downAngle * 0.1))
