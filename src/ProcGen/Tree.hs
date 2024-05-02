@@ -41,6 +41,10 @@ data PShape = Spherical
             | Envelope
             | Conical
 
+data LeafShape = NOTIMPLEMENTED
+
+data BlossomShape = NOTIMPLEMENTED'
+
 data Parameters = Parameters
   { pShape          :: PShape    
   , pGScale         :: Double    
@@ -75,7 +79,15 @@ data Parameters = Parameters
   , pPruneWidth     :: Double   
   , pPruneWidthPeak :: Double   
   , pPrunePowerLow  :: Double   
-  , pPrunePowerHigh :: Double   
+  , pPrunePowerHigh :: Double
+  , pLeafBlosNum    :: Int
+  , pLeafShape      :: LeafShape
+  , pLeafScale      :: Double
+  , pLeafScaleX     :: Double
+  , pLeafBend       :: Double
+  , pBlossomShape   :: BlossomShape
+  , pBlossomScale   :: Double
+  , pBlossomRate    :: Double
   }
 
 validateParameters :: Parameters -> Either String Parameters
@@ -116,6 +128,11 @@ validateParameters Parameters {..}
   | pPruneRatio > 1 = Left "'pPruneRatio' must be less than or equal to 1."
   | pPruneWidth <= 0 = Left "'pPruneWidth' must be greater than 0."
   | pPruneWidthPeak < 0 = Left "'pPruneWidthPeak' must be greater than or equal to 0."
+  | pLeafScale <= 0 = Left "'pLeafScale' must be greater than 0."
+  | pLeafScaleX <= 0 = Left "'pLeafScaleX' must be greater than 0."
+  | pLeafBend < 0 || pLeafBend > 1 = Left "'pLeafBlend' must be in [0,1]."
+  | pBlossomScale <= 0 = Left "'pBlossomScale' must be greater than 0."
+  | pBlossomRate < 0 || pBlossomRate > 1 = Left "'pBlossomRate' must be in [0,1]."
   | otherwise = Right $ Parameters {..}
 
 data Stem = Stem
@@ -130,12 +147,15 @@ data Stem = Stem
   , sIndex :: Int
   }
 
+type LeafPos = Turtle
+
 data Tree = Tree
   { tTreeScale :: Double
   , tBaseLength :: Double
   , tSplitNumError :: V.Vector Double
   , tTrunkLength :: Double
   , tStems :: V.Vector Stem
+  , tLeaves :: Maybe (V.Vector LeafPos)
   }
 
 -- | Create a "blank" stem
@@ -515,3 +535,15 @@ calcRotateAngle depth prevAngle = do
   if rot >= 0
     then return $ mod' (prevAngle + rot + (r * rotV)) (2 * pi)
     else return $ prevAngle * (pi + rot + (r * rotV))
+
+calcLeafCount :: TreeBuilder g Double
+calcLeafCount = do
+  Parameters {..} <- ask
+  if pLeafBlosNum >= 0
+    then useTreeM $
+         \ Tree {..} -> useStemM $
+         \ Stem {..} -> useParent $
+         \ Stem { sLengthChildMax = psLengthChildMax, sLength = psLength } ->
+           let leaves = fromIntegral pLeafBlosNum * tTreeScale / pGScale
+           in leaves * (sLength / (psLengthChildMax * psLength))
+    else return $ fromIntegral pLeafBlosNum
