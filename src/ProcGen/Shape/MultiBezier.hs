@@ -28,7 +28,7 @@ data CubicMP a = CubicMP
   { bControl :: V3 a
   , bHandleLeft :: V3 a
   , bHandleRight :: V3 a
-  , cphRadius :: a
+  , bRadius :: a
   }
   deriving (Show)
 
@@ -38,13 +38,14 @@ instance (Ord a, Floating a, Epsilon a) => MultiPoint (CubicMP a) a where
     (CubicMP (V3 cx3 cy3 cz3) (V3 cx2 cy2 cz2) _ r2)
     = CubicBezier { taperC = mkTaper r1 r2, ..}
 
-newtype (Ord a, Floating a, Epsilon a, Bezier b a) => RawCurve b a = RawCurve (V.Vector b)
+newtype (Ord a, Floating a, Epsilon a, Bezier b a) => RawCurve b a =
+  RawCurve { rawCurvePoints :: V.Vector b }
 
 class (Ord a, Floating a, Epsilon a, MultiPoint p a, Bezier (BezierType p) a)
       => MultiBezier c p a | c -> p, p -> a where
   toRawCurve :: (a -> a -> (a -> a)) -> c -> RawCurve (BezierType p) a
 
-newtype MultiPoint p a => Curve p a = Curve (V.Vector p)
+newtype MultiPoint p a => Curve p a = Curve { curvePoints :: V.Vector p }
   deriving (Eq, Ord, Show, Monoid, Semigroup, IsList)
 
 type CubicCurve a = Curve (CubicMP a) a

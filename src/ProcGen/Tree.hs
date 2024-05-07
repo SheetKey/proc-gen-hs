@@ -7,6 +7,7 @@
 module ProcGen.Tree where
 
 import MathUtil
+import ProcGen.Shape.Bezier
 import ProcGen.Shape.MultiBezier
 import ProcGen.Turtle
 
@@ -288,6 +289,10 @@ modifyTurtle f = TB $ \ _ tk _ g TBState {..} ->
 modifyTree :: (Tree -> Tree) -> TreeBuilder g ()
 modifyTree f = modify $ \ TBState {..} -> TBState
   { tree = f tree, .. }
+
+modifyStemCurve :: (V.Vector (CubicMP Double) -> V.Vector (CubicMP Double)) -> TreeBuilder g ()
+modifyStemCurve f = modifyStem $ \ Stem { sCurve = Curve c, ..} ->
+  Stem { sCurve = Curve (f c), .. }
 
 getStemKey :: StemKey -> TreeBuilder g Stem
 getStemKey key = (M.! key) . stems <$> get
@@ -588,3 +593,32 @@ calcRadiusAtOffset z1 = useStemM $ \ Stem {..} -> do
              flare = pFlare * (100 ** yVal) / 100 + 1
          in return $ radius * flare
     else return radius
+
+zeroBezierPoint :: CubicMP Double
+zeroBezierPoint = CubicMP (V3 0 0 0) (V3 0 0 0) (V3 0 0 0) 0
+
+increaseBezierPointRes :: Int -> Int -> TreeBuilder g ()
+increaseBezierPointRes segInd pointsPerSeg = useStemM $ \ Stem {..} -> do
+  Parameters {..} <- ask
+  let curve = curvePoints sCurve
+      curveNumPoints = V.length curve
+      segEndPoint = curve V.! (curveNumPoints - 1)
+      segStartPoint = curve V.! (curveNumPoints - 2)
+  forM_ [0..(pointsPerSeg - 1)] $ \ k -> do
+    let offset = fromIntegral k / (fromIntegral pointsPerSeg - 1)
+        idx = curveNumPoints - 2 + k
+    when (k > 1) $
+      modifyStemCurve (`V.snoc` zeroBezierPoint)
+    when (k == pointsPerSeg - 1) $
+      modifyStemCurve (V.// [(idx, segEndPoint)])
+    when (0 < k && k < pointsPerSeg - 1) $
+      let co = fst $ (`eval` offset) $ toBezier (\_ _ -> id) segStartPoint segEndPoint
+          tang =
+            normalize $ (`tangent` offset) $ toBezier (\_ _ -> id) segStartPoint segEndPoint
+          dirVecMag = norm $ bHandleLeft segEndPoint - bControl segStartPoint
+          hl = co - tang ^* dirVecMag
+          hr = co + tang ^* dirVecMag
+      in modifyStemCurve (V.// [(idx, CubicMP co hl hr 0)])
+    radiusAtOffset <- calcRadiusAtOffset $
+      (offset + fromIntegral segInd - 1) / (fromIntegral $ pCurveRes V.! sDepth)
+    modifyStemCurve $ \ c -> c V.// [(idx, (c V.! idx) { bRadius = radiusAtOffset })]
