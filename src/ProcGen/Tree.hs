@@ -6,14 +6,16 @@
 
 module ProcGen.Tree where
 
+import Util
 import MathUtil
-import ProcGen.Shape.Bezier
 import ProcGen.Shape.MultiBezier
 import ProcGen.Turtle
 
 -- base
 import Control.Arrow (first)
 import Data.Fixed (mod')
+import Data.Functor ((<&>))
+import Data.Function ((&))
 
 -- linear
 import Linear
@@ -30,6 +32,9 @@ import Control.Monad.State.Class
 
 -- containers
 import qualified Data.IntMap.Lazy as M
+
+-- lens
+import qualified Control.Lens as L
 
 data BranchMode = Fan | Whorled | AltOpp
 
@@ -436,7 +441,27 @@ useParentM f = useStemM $ \ Stem { sParent } ->
   case sParent of
     Nothing -> error "stem has no parent"
     Just pkey -> useStemKeyM pkey f
-    
+
+withStemKey :: StemKey -> TreeBuilder g a -> TreeBuilder g a
+withStemKey key (TB f) = TB $ \ _ -> f key
+
+withTurtleKey :: TurtleKey -> TreeBuilder g a -> TreeBuilder g a
+withTurtleKey key (TB f) = TB $ \ sk _ -> f sk key
+
+withStem :: Stem -> TreeBuilder g a -> TreeBuilder g a
+withStem stem m = do
+  key <- putStem stem
+  res <- withStemKey key m
+  deleteStemKey key
+  return res
+
+withTurtle :: Turtle -> TreeBuilder g a -> TreeBuilder g a
+withTurtle turt m = do
+  key <- putTurtle turt
+  res <- withTurtleKey key m
+  deleteTurtleKey key
+  return res
+
 calcHelixPoints :: RandomGen g => Double -> Double
                 -> TreeBuilder g (V3 Double, V3 Double, V3 Double, V3 Double)
 calcHelixPoints rad pitch = useTurtleM $ \Turtle {..} -> do
@@ -612,13 +637,106 @@ increaseBezierPointRes segInd pointsPerSeg = useStemM $ \ Stem {..} -> do
     when (k == pointsPerSeg - 1) $
       modifyStemCurve (V.// [(idx, segEndPoint)])
     when (0 < k && k < pointsPerSeg - 1) $
-      let co = fst $ (`eval` offset) $ toBezier (\_ _ -> id) segStartPoint segEndPoint
-          tang =
-            normalize $ (`tangent` offset) $ toBezier (\_ _ -> id) segStartPoint segEndPoint
+      let co = evalMP segStartPoint segEndPoint offset
+          tang = normalize $ tangentMP segStartPoint segEndPoint offset
           dirVecMag = norm $ bHandleLeft segEndPoint - bControl segStartPoint
           hl = co - tang ^* dirVecMag
           hr = co + tang ^* dirVecMag
       in modifyStemCurve (V.// [(idx, CubicMP co hl hr 0)])
     radiusAtOffset <- calcRadiusAtOffset $
-      (offset + fromIntegral segInd - 1) / (fromIntegral $ pCurveRes V.! sDepth)
+      (offset + fromIntegral segInd - 1) / fromIntegral (pCurveRes V.! sDepth)
     modifyStemCurve $ \ c -> c V.// [(idx, (c V.! idx) { bRadius = radiusAtOffset })]
+
+isPointInside :: V3 Double -> TreeBuilder g Bool
+isPointInside (V3 x y z) = useTreeM $ \ Tree {..} -> do
+  Parameters {..} <- ask
+  let dist = sqrt $ (x ^ (2 :: Int)) + (y ^ (2 :: Int))
+      ratio = (tTreeScale - z) / (tTreeScale * (1 - (pBaseSize V.! 0)))
+  shapeRatio <- calcShapeRatio Envelope ratio
+  return $ (dist / tTreeScale) < (pPruneWidth * shapeRatio)
+
+makeBranchPosTurtle
+  :: Turtle -> Double -> CubicMP Double -> CubicMP Double -> Double -> (Turtle, Turtle)
+makeBranchPosTurtle dirTurtle offset startPoint endPoint radiusLimit =
+  let pos = evalMP startPoint endPoint offset
+      dirTurtle' = dirTurtle { turtlePos = pos }
+      branchPosTurtle = move radiusLimit $ pitchDown (pi / 2) dirTurtle'
+  in (dirTurtle', branchPosTurtle)
+
+makeBranchDirTurtle :: Turtle -> Bool -> Double -> CubicMP Double -> CubicMP Double -> Turtle
+makeBranchDirTurtle turtle isHelix offset startPoint endPoint =
+  let tang = normalize $ tangentMP startPoint endPoint offset
+      right = if isHelix
+              then let tanD = normalize $ tangentMP startPoint endPoint (offset + 0.0001)
+                   in tang `cross` tanD
+              else (turtleDir turtle `cross` turtleRight turtle) `cross` tang
+  in Turtle tang (V3 0 0 0) right
+
+applyTropism :: V3 Double -> Turtle -> Turtle
+applyTropism tropismVec turtle =
+  let hcrosst = turtleDir turtle `cross` tropismVec
+      alpha = pi * (10 * norm hcrosst) / 180
+      nhcrosst = normalize hcrosst
+      dir = normalize $ rotate (axisAngle nhcrosst alpha) (turtleDir turtle)
+      right = normalize $ rotate (axisAngle nhcrosst alpha) (turtleRight turtle)
+  in turtle { turtleDir = dir, turtleRight = right }
+
+scaleHandlesForFlare :: Int -> TreeBuilder g ()
+scaleHandlesForFlare maxPointsPerSeg = modifyStemCurve $
+  V.map (\ CubicMP {..} -> CubicMP
+          { bHandleLeft = bControl + ((bHandleLeft - bControl) ^/ fromIntegral maxPointsPerSeg)
+          , bHandleRight = bControl + ((bHandleRight - bControl) ^/ fromIntegral maxPointsPerSeg)
+          , .. })
+
+pointsForFloorSplit :: RandomGen g => TreeBuilder g (V.Vector (V3 Double, Double))
+pointsForFloorSplit = useTreeM $ \ Tree {..} -> do
+  Parameters {..} <- ask
+  adjustTree $ Tree { tTreeScale = pGScale + pGScaleV, .. }
+  let dummyStem = stemFromDepth 0
+      branches = pBranches V.! 0
+  rad <- withStem dummyStem $ do
+    l <- calcStemLength
+    modifyStem $ \ Stem {..} -> Stem { sLength = l, .. }
+    calcStemRadius <&> (* 2.5)
+  V.foldM (\ points _ -> do
+              newPnt <- untilJustM $ do
+                r <- getRandomR (0, 1)
+                theta <- getRandomR (0, 2 * pi)
+                let dis = sqrt $ r * fromIntegral branches / 2.5 * pGScale * pRatio
+                    pos = V3 (dis * cos theta) (dis * sin theta) 0
+                if V.all (\ (p, _) -> norm (pos - p) < rad) points
+                  then return $ Just (pos, theta)
+                  else return Nothing
+              return $ points `V.snoc` newPnt
+          ) V.empty (V.replicate branches (0 :: Int)) 
+
+calcHelixParameters :: RandomGen g => TreeBuilder g (V3 Double, V3 Double, V3 Double, V3 Double)
+calcHelixParameters = useStemM $ \ Stem {..} -> do
+  Parameters {..} <- ask
+  if sDepth > 1
+    then modifyTurtle $ applyTropism pTropism
+    else modifyTurtle $ applyTropism $ pTropism & (L..~)_z 0
+  r1 <- getRandomR (0.8, 1.2)
+  r2 <- getRandomR (0.8, 1.2)
+  let tanAng = tan $ (pi / 2) - abs (pCurveV V.! sDepth)
+      helPitch = 2 * sLength / fromIntegral (pCurveRes V.! sDepth) * r1
+      helRadius = 3 * helPitch / (16 * tanAng) * r2
+  calcHelixPoints helRadius helPitch
+
+testStemHelix :: RandomGen g => Int -> TreeBuilder g Bool
+testStemHelix start = useStemM $ \ Stem {..} -> do
+  Parameters {..} <- ask
+  let curveRes = pCurveRes V.! sDepth
+  (_, _, helP2, helAxis) <- calcHelixParameters
+  pos <- V.foldM (\ prevHelPnt segInd -> do
+                       when (segInd == 1) $
+                         modifyTurtle $
+                         \ Turtle {..} -> Turtle { turtlePos = turtlePos + helP2, .. }
+                       when (segInd > 1) $
+                         let helP2'
+                               = rotate (axisAngle helAxis $ (fromIntegral segInd - 1) * pi) helP2
+                         in modifyTurtle $
+                            \ Turtle {..} -> Turtle { turtlePos = prevHelPnt + helP2', .. }
+                       useTurtle turtlePos
+                   ) (V3 0 0 0) (V.enumFromN start (curveRes - start))
+  isPointInside pos
