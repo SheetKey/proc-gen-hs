@@ -27,6 +27,7 @@ library
 
                     , ProcGen.Turtle
 
+                    , Util
                     , MathUtil
 
     build-depends:    base ^>=4.18.2.0
