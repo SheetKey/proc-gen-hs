@@ -21,6 +21,10 @@ import qualified Data.Vector as V
 class (Ord a, Floating a, Epsilon a, Bezier (BezierType p) a) => MultiPoint p a | p -> a where
   type BezierType p
   toBezier :: (a -> a -> (a -> a)) -> p -> p -> BezierType p
+  evalMP :: p -> p -> a -> V3 a
+  evalMP p1 p2 t = fst $ (`eval` t) $ toBezier (\_ _ -> id) p1 p2
+  tangentMP :: Bezier (Deriv (BezierType p)) a => p -> p -> a -> V3 a
+  tangentMP p1 p2 t = (`tangent` t) $ toBezier (\_ _ -> id) p1 p2
 
 -- | A 'CubicMP' is a "curve point with handles" for a cubic bezier.
 -- Useful for generation.
